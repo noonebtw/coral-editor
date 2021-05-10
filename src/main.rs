@@ -1,7 +1,12 @@
+use std::{
+    io::{Cursor, Read, Result},
+    path::PathBuf,
+};
+
 use glutin_window::GlutinWindow;
 use graphics::math::Matrix2d;
-use image::{imageops, RgbaImage};
-use log::info;
+use image::{imageops, png::PngDecoder, DynamicImage, ImageOutputFormat, ImageResult, RgbaImage};
+use log::{debug, error, info, warn};
 
 use opengl_graphics::{GlGraphics, OpenGL, Texture, TextureSettings};
 use piston::{
@@ -16,6 +21,7 @@ use piston::{window::WindowSettings, ButtonArgs};
 use vecmath::{mat2x3_id, mat2x3_inv, row_mat2x3_transform_pos2};
 
 pub struct App {
+    config: Config,
     gl: GlGraphics, // OpenGL drawing backend.
     image: RgbaImage,
     texture: Texture,
@@ -24,16 +30,13 @@ pub struct App {
 }
 
 impl App {
-    fn new(gl: GlGraphics) -> Self {
-        let image = image::io::Reader::open("bladerunner.jpg")
-            .unwrap()
-            .decode()
-            .unwrap()
-            .to_rgba8();
+    fn new(gl: GlGraphics, config: Config) -> Self {
+        let image = config.open_image().unwrap();
 
         let texture = Texture::from_image(&image, &TextureSettings::new());
 
         Self {
+            config,
             gl,
             image,
             texture,
@@ -49,7 +52,6 @@ impl App {
     fn render(&mut self, args: &RenderArgs) {
         let Self {
             gl,
-            image,
             texture,
             area_selection,
             last_mouse_pos,
@@ -58,7 +60,7 @@ impl App {
 
         use graphics::*;
 
-        const GREEN: [f32; 4] = [0.0, 1.0, 0.0, 1.0];
+        const BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
         const BLACK: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
         let (window_width, window_height) = (args.window_size[0], args.window_size[1]);
@@ -83,7 +85,7 @@ impl App {
 
         gl.draw(args.viewport(), |ctx, gl| {
             // Clear the screen.
-            clear(GREEN, gl);
+            clear(BACKGROUND, gl);
 
             let trans = ctx.transform.append_transform(trans);
 
@@ -179,7 +181,11 @@ impl App {
                     self.area_selection = (None, None);
                 } else {
                     info!("saving image..");
-                    self.image.save("coral-editor-out.png").unwrap();
+                    let _ = self
+                        .config
+                        .save_image(DynamicImage::ImageRgba8(self.image.clone()))
+                        .map_err(|e| error!("Error while saving image: {:#?}", e));
+
                     window.set_should_close(true);
                 }
             }
@@ -193,21 +199,112 @@ impl App {
     fn update(&mut self, _args: &UpdateArgs) {}
 }
 
-fn main() {
-    simple_logger::SimpleLogger::new().init().unwrap();
+#[derive(Debug)]
+struct Config {
+    input_file: Option<PathBuf>,
+    output_file: Option<PathBuf>,
+    graphical: bool,
+}
 
-    // Change this to OpenGL::V2_1 if not working.
+impl Config {
+    fn open_image(&self) -> ImageResult<RgbaImage> {
+        match &self.input_file {
+            Some(path) => Ok(image::io::Reader::open(&path)?.decode()?.to_rgba8()),
+            None => {
+                info!("reading image data from stdin..");
+
+                let stdin = std::io::stdin();
+                let mut buf = Vec::new();
+                stdin.lock().read_to_end(&mut buf)?;
+
+                Ok(image::io::Reader::new(Cursor::new(buf))
+                    .with_guessed_format()?
+                    .decode()?
+                    .to_rgba8())
+            }
+        }
+    }
+
+    fn save_image(&self, image: DynamicImage) -> ImageResult<()> {
+        match &self.output_file {
+            Some(path) => {
+                info!("saving as {}", path.to_string_lossy());
+                image.save(path)?;
+            }
+            None => {
+                if !atty::is(atty::Stream::Stdout) {
+                    let stdout = std::io::stdout();
+
+                    image.write_to(&mut stdout.lock(), ImageOutputFormat::Png)?;
+                } else {
+                    warn!("stdout is a tty, aborting printing binary..");
+                }
+            }
+        };
+
+        Ok(())
+    }
+}
+
+fn parse_commandline() -> Config {
+    let matches = clap::App::new(std::env!("CARGO_BIN_NAME"))
+        .version(std::env!("CARGO_PKG_VERSION"))
+        .author("Janis Böhm (No One)")
+        .about("Coral takes screenshots")
+        .arg(
+            clap::Arg::with_name("input_file")
+                .short("i")
+                .aliases(&["f", "i", "input"])
+                .long("file")
+                .value_name("input_file")
+                .help("input file name"),
+        )
+        .arg(
+            clap::Arg::with_name("output_file")
+                .short("o")
+                .long("output")
+                .value_name("output_file")
+                .help("output file name; if not specified, the image will be printed to `stdout`"),
+        )
+        .arg(
+            clap::Arg::with_name("quiet")
+                .short("q")
+                .long("quiet")
+                .takes_value(false)
+                .help("silent execution"),
+        )
+        .arg(
+            clap::Arg::with_name("gui")
+                .short("g")
+                .long("graphical")
+                .takes_value(false)
+                .help("Enables GUI to edit image; if omitted the default behaviour is to write `input_file` to `output_file`"),
+        ).get_matches();
+
+    if !matches.is_present("quiet") {
+        simple_logger::SimpleLogger::new().init().unwrap();
+    }
+
+    Config {
+        input_file: matches.value_of("input_file").map(|s| s.into()),
+        output_file: matches.value_of("output_file").map(|s| s.into()),
+        graphical: matches.is_present("gui"),
+    }
+}
+
+fn run_graphical(config: Config) {
     let opengl = OpenGL::V3_2;
 
     // Create an Glutin window.
-    let mut window = WindowSettings::new("spinning-square", [200, 200])
+    let mut window = WindowSettings::new(std::env!("CARGO_BIN_NAME"), [200, 200])
         .graphics_api(opengl)
+        .transparent(true)
         .exit_on_esc(false)
         .build()
         .unwrap();
 
     // Create a new game and run it.
-    let mut app = App::new(GlGraphics::new(opengl));
+    let mut app = App::new(GlGraphics::new(opengl), config);
 
     let mut events = Events::new(EventSettings::new());
     while let Some(e) = events.next(&mut window) {
@@ -221,4 +318,28 @@ fn main() {
             app.update(&args);
         }
     }
+}
+
+fn run_cli(config: Config) {
+    info!("CLI runner.");
+
+    let image = config.open_image().unwrap();
+
+    let _ = config
+        .save_image(DynamicImage::ImageRgba8(image))
+        .map_err(|e| error!("Error while saving image: {:#?}", e));
+}
+
+fn main() -> Result<()> {
+    let config = parse_commandline();
+    debug!("config: {:#?}", config);
+
+    if config.graphical {
+        run_graphical(config);
+    } else {
+        run_cli(config);
+    }
+
+    info!("exiting successfully");
+    Ok(())
 }
