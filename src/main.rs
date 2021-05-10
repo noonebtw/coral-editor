@@ -1,12 +1,12 @@
+use glutin_window::GlutinWindow;
 use graphics::math::Matrix2d;
 use image::{imageops, RgbaImage};
 use log::info;
 
-use glutin_window::GlutinWindow as Window;
 use opengl_graphics::{GlGraphics, OpenGL, Texture, TextureSettings};
 use piston::{
     event_loop::{EventSettings, Events},
-    Button, ButtonState, MouseButton, MouseCursorEvent,
+    Button, ButtonState, Key, MouseButton, MouseCursorEvent, Window,
 };
 use piston::{
     input::{RenderArgs, RenderEvent, UpdateArgs, UpdateEvent},
@@ -71,7 +71,7 @@ impl App {
             window_height / image_height as f64,
         );
 
-        let ratio = f64::min(ratio_width, ratio_height);
+        let ratio = f64::min(ratio_width, ratio_height) * 0.95;
 
         let trans = (mat2x3_id() as Matrix2d)
             .trans(x, y)
@@ -105,31 +105,45 @@ impl App {
         });
 
         if let (Some(start), Some(end)) = self.area_selection {
-            info!("Crop: {:#?}", (start, end));
-
-            let (start, end) = {
+            let (a, b) = {
                 (
                     row_mat2x3_transform_pos2(mat2x3_inv(trans), start),
                     row_mat2x3_transform_pos2(mat2x3_inv(trans), end),
                 )
             };
 
-            info!("Crop: {:#?}", (start, end));
-
-            let (start, size) = {
-                (
-                    (start[0] as u32, start[1] as u32),
-                    ((end[0] - start[0]) as u32, (end[1] - start[1]) as u32),
-                )
-            };
-
             // sanitize
-            let (start, size) = {
+            let (a, b) = {
+                use std::cmp::min;
                 (
-                    (std::cmp::max(0, start.0), std::cmp::max(0, start.1)),
-                    (std::cmp::max(0, size.0), std::cmp::max(0, size.1)),
+                    (
+                        min(image_width, f64::max(0.0, a[0]) as u32),
+                        min(image_height, f64::max(0.0, a[1]) as u32),
+                    ),
+                    (
+                        min(image_width, f64::max(0.0, b[0]) as u32),
+                        min(image_height, f64::max(0.0, b[1]) as u32),
+                    ),
                 )
             };
+
+            let (start, size) = {
+                use std::cmp::min;
+
+                let start = (min(a.0, b.0), min(a.1, b.1));
+
+                // u32 abs() when?
+                let size = (
+                    a.0.checked_sub(b.0)
+                        .unwrap_or_else(|| b.0.checked_sub(a.0).unwrap()),
+                    b.1.checked_sub(a.1)
+                        .unwrap_or_else(|| a.1.checked_sub(b.1).unwrap()),
+                );
+
+                (start, size)
+            };
+
+            info!("Crop: {:#?}", (start, size));
 
             self.image =
                 imageops::crop_imm(&self.image, start.0, start.1, size.0, size.1).to_image();
@@ -140,10 +154,13 @@ impl App {
         }
     }
 
-    fn input(&mut self, button: Option<ButtonArgs>, mouse: Option<[f64; 2]>) {
+    fn input(
+        &mut self,
+        window: &mut GlutinWindow,
+        button: Option<ButtonArgs>,
+        mouse: Option<[f64; 2]>,
+    ) {
         if let Some(b) = button {
-            info!("button: {:?}", b);
-
             if b.button == Button::Mouse(MouseButton::Left) && b.state == ButtonState::Press {
                 if let Some(mouse) = self.last_mouse_pos {
                     self.area_selection.0 = Some(mouse);
@@ -152,8 +169,18 @@ impl App {
             }
 
             if b.button == Button::Mouse(MouseButton::Left) && b.state == ButtonState::Release {
-                if let Some(mouse) = self.last_mouse_pos {
+                if let (Some(mouse), Some(_)) = (self.last_mouse_pos, self.area_selection.0) {
                     self.area_selection.1 = Some(mouse);
+                }
+            }
+
+            if b.button == Button::Keyboard(Key::Escape) && b.state == ButtonState::Release {
+                if self.area_selection.0.is_some() {
+                    self.area_selection = (None, None);
+                } else {
+                    info!("saving image..");
+                    self.image.save("coral-editor-out.png").unwrap();
+                    window.set_should_close(true);
                 }
             }
         }
@@ -173,9 +200,9 @@ fn main() {
     let opengl = OpenGL::V3_2;
 
     // Create an Glutin window.
-    let mut window: Window = WindowSettings::new("spinning-square", [200, 200])
+    let mut window = WindowSettings::new("spinning-square", [200, 200])
         .graphics_api(opengl)
-        .exit_on_esc(true)
+        .exit_on_esc(false)
         .build()
         .unwrap();
 
@@ -188,7 +215,7 @@ fn main() {
             app.render(&args);
         }
 
-        app.input(e.button_args(), e.mouse_cursor_args());
+        app.input(&mut window, e.button_args(), e.mouse_cursor_args());
 
         if let Some(args) = e.update_args() {
             app.update(&args);
