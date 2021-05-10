@@ -1,0 +1,17 @@
+[package]
+name = "coral-editor"
+version = "0.1.0"
+authors = ["NoOneBtw <noonebtw@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+piston = "0.53.0"
+vecmath = "1.0.0"
+piston2d-graphics = "0.40.0"
+pistoncore-glutin_window = "0.69.0"
+piston2d-opengl_graphics = "0.78.0"#clap = "2.33.0"
+log = "0.4.13"
+image = "0.23.14"
+simple_logger = "1.11.0"
