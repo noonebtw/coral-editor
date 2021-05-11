@@ -62,6 +62,7 @@ impl App {
         use graphics::*;
 
         const BACKGROUND: [f32; 4] = [0.0, 0.0, 0.0, 0.0];
+        const TRANSLUCENT_WHITE: [f32; 4] = [1.0, 1.0, 1.0, 0.2];
         const BLACK: [f32; 4] = [0.0, 0.0, 0.0, 1.0];
 
         let (window_width, window_height) = (args.window_size[0], args.window_size[1]);
@@ -101,10 +102,11 @@ impl App {
                 let b = [c[0], a[1]];
                 let d = [a[0], c[1]];
 
-                graphics::line_from_to(BLACK, 1.0, a, b, ctx.transform, gl);
-                graphics::line_from_to(BLACK, 1.0, b, c, ctx.transform, gl);
-                graphics::line_from_to(BLACK, 1.0, c, d, ctx.transform, gl);
-                graphics::line_from_to(BLACK, 1.0, d, a, ctx.transform, gl);
+                graphics::line_from_to(BLACK, 0.5, a, b, ctx.transform, gl);
+                graphics::line_from_to(BLACK, 0.5, b, c, ctx.transform, gl);
+                graphics::line_from_to(BLACK, 0.5, c, d, ctx.transform, gl);
+                graphics::line_from_to(BLACK, 0.5, d, a, ctx.transform, gl);
+                graphics::rectangle_from_to(TRANSLUCENT_WHITE, a, c, ctx.transform, gl);
             }
         });
 
@@ -212,9 +214,13 @@ impl App {
                     button: Button::Keyboard(Key::Escape),
                     ..
                 } => {
-                    info!("Closing without saving..");
+                    if self.area_selection.0.is_some() {
+                        self.area_selection.0 = None;
+                    } else {
+                        info!("Closing without saving..");
 
-                    window.set_should_close(true);
+                        window.set_should_close(true);
+                    }
                 }
                 _ => {}
             }
