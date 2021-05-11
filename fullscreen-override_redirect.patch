@@ -1,0 +1,32 @@
+diff --git a/src/lib.rs b/src/lib.rs
+index 9442233..f56f352 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -38,6 +38,7 @@ use window::{
+ };
+ use glutin::GlRequest;
+ use glutin::platform::run_return::EventLoopExtRunReturn;
++use glutin::platform::unix::WindowBuilderExtUnix;
+ use std::time::Duration;
+ use std::thread;
+ 
+@@ -80,8 +81,18 @@ fn window_builder_from_settings(settings: &WindowSettings) -> glutin::window::Wi
+     if settings.get_fullscreen() {
+         let event_loop = glutin::event_loop::EventLoop::new();
+         let monitor = event_loop.primary_monitor();
++        let monitor_size = monitor.as_ref().map(|m| m.size());
+         let fullscreen = glutin::window::Fullscreen::Borderless(monitor);
+-        builder = builder.with_fullscreen(Some(fullscreen));
++
++        builder = builder
++            .with_fullscreen(Some(fullscreen))
++            .with_decorations(false)
++            .with_always_on_top(true)
++            .with_override_redirect(true);
++
++        if let Some(size) = monitor_size {
++            builder = builder.with_inner_size(size).with_min_inner_size(size);
++        }
+     }
+     builder
+ }

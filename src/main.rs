@@ -5,7 +5,7 @@ use std::{
 
 use glutin_window::GlutinWindow;
 use graphics::math::Matrix2d;
-use image::{imageops, png::PngDecoder, DynamicImage, ImageOutputFormat, ImageResult, RgbaImage};
+use image::{imageops, DynamicImage, ImageOutputFormat, ImageResult, RgbaImage};
 use log::{debug, error, info, warn};
 
 use opengl_graphics::{GlGraphics, OpenGL, Texture, TextureSettings};
@@ -55,6 +55,7 @@ impl App {
             texture,
             area_selection,
             last_mouse_pos,
+            config,
             ..
         } = self;
 
@@ -73,7 +74,8 @@ impl App {
             window_height / image_height as f64,
         );
 
-        let ratio = f64::min(ratio_width, ratio_height) * 0.95;
+        let ratio =
+            f64::min(ratio_width, ratio_height) * if config.force_fullscreen { 1.0 } else { 0.95 };
 
         let trans = (mat2x3_id() as Matrix2d)
             .trans(x, y)
@@ -163,31 +165,58 @@ impl App {
         mouse: Option<[f64; 2]>,
     ) {
         if let Some(b) = button {
-            if b.button == Button::Mouse(MouseButton::Left) && b.state == ButtonState::Press {
-                if let Some(mouse) = self.last_mouse_pos {
-                    self.area_selection.0 = Some(mouse);
-                    self.area_selection.1 = None;
+            match b {
+                ButtonArgs {
+                    state: ButtonState::Press,
+                    button: Button::Mouse(MouseButton::Left),
+                    ..
+                } => {
+                    if let Some(mouse) = self.last_mouse_pos {
+                        self.area_selection.0 = Some(mouse);
+                        self.area_selection.1 = None;
+                    }
                 }
-            }
-
-            if b.button == Button::Mouse(MouseButton::Left) && b.state == ButtonState::Release {
-                if let (Some(mouse), Some(_)) = (self.last_mouse_pos, self.area_selection.0) {
-                    self.area_selection.1 = Some(mouse);
+                ButtonArgs {
+                    state: ButtonState::Release,
+                    button: Button::Mouse(MouseButton::Left),
+                    ..
+                } => {
+                    if let (Some(mouse), Some(_)) = (self.last_mouse_pos, self.area_selection.0) {
+                        self.area_selection.1 = Some(mouse);
+                    }
                 }
-            }
+                ButtonArgs {
+                    state: ButtonState::Release,
+                    button: Button::Keyboard(Key::W),
+                    ..
+                } => {
+                    if self.area_selection.0.is_some() {
+                        self.area_selection = (None, None);
+                    } else {
+                        info!("saving image..");
+                        let _ = self
+                            .config
+                            .save_image(DynamicImage::ImageRgba8(self.image.clone()))
+                            .map_err(|e| error!("Error while saving image: {:#?}", e));
 
-            if b.button == Button::Keyboard(Key::Escape) && b.state == ButtonState::Release {
-                if self.area_selection.0.is_some() {
-                    self.area_selection = (None, None);
-                } else {
-                    info!("saving image..");
-                    let _ = self
-                        .config
-                        .save_image(DynamicImage::ImageRgba8(self.image.clone()))
-                        .map_err(|e| error!("Error while saving image: {:#?}", e));
+                        window.set_should_close(true);
+                    }
+                }
+                ButtonArgs {
+                    state: ButtonState::Release,
+                    button: Button::Keyboard(Key::Q),
+                    ..
+                }
+                | ButtonArgs {
+                    state: ButtonState::Release,
+                    button: Button::Keyboard(Key::Escape),
+                    ..
+                } => {
+                    info!("Closing without saving..");
 
                     window.set_should_close(true);
                 }
+                _ => {}
             }
         }
 
@@ -204,9 +233,64 @@ struct Config {
     input_file: Option<PathBuf>,
     output_file: Option<PathBuf>,
     graphical: bool,
+    force_fullscreen: bool,
 }
 
 impl Config {
+    fn parse() -> Self {
+        let matches = clap::App::new(std::env!("CARGO_BIN_NAME"))
+            .version(std::env!("CARGO_PKG_VERSION"))
+            .author("Janis Böhm (No One)")
+            .about("Coral takes screenshots")
+            .arg(
+                clap::Arg::with_name("input_file")
+                    .short("i")
+                    .long("input")
+                    .value_name("input_file")
+                    .help("input file name"),
+            )
+            .arg(
+                clap::Arg::with_name("output_file")
+                    .short("o")
+                    .long("output")
+                    .value_name("output_file")
+                    .help("output file name; if not specified, the image will be printed to `stdout`"),
+            )
+            .arg(
+                clap::Arg::with_name("quiet")
+                    .short("q")
+                    .long("quiet")
+                    .takes_value(false)
+                    .help("silent execution"),
+            )
+            .arg(
+                clap::Arg::with_name("fullscreen")
+                    .short("f")
+                    .aliases(&["fs"])
+                    .long("fullscreen")
+                    .takes_value(false)
+                    .help("force fullscreen by setting `override_request`"),
+            )
+            .arg(
+                clap::Arg::with_name("gui")
+                    .short("g")
+                    .long("graphical")
+                    .takes_value(false)
+                    .help("Enables GUI to edit image; if omitted the default behaviour is to write `input_file` to `output_file`"),
+            ).get_matches();
+
+        if !matches.is_present("quiet") {
+            simple_logger::SimpleLogger::new().init().unwrap();
+        }
+
+        Self {
+            input_file: matches.value_of("input_file").map(|s| s.into()),
+            output_file: matches.value_of("output_file").map(|s| s.into()),
+            graphical: matches.is_present("gui"),
+            force_fullscreen: matches.is_present("fullscreen"),
+        }
+    }
+
     fn open_image(&self) -> ImageResult<RgbaImage> {
         match &self.input_file {
             Some(path) => Ok(image::io::Reader::open(&path)?.decode()?.to_rgba8()),
@@ -246,52 +330,6 @@ impl Config {
     }
 }
 
-fn parse_commandline() -> Config {
-    let matches = clap::App::new(std::env!("CARGO_BIN_NAME"))
-        .version(std::env!("CARGO_PKG_VERSION"))
-        .author("Janis Böhm (No One)")
-        .about("Coral takes screenshots")
-        .arg(
-            clap::Arg::with_name("input_file")
-                .short("i")
-                .aliases(&["f", "i", "input"])
-                .long("file")
-                .value_name("input_file")
-                .help("input file name"),
-        )
-        .arg(
-            clap::Arg::with_name("output_file")
-                .short("o")
-                .long("output")
-                .value_name("output_file")
-                .help("output file name; if not specified, the image will be printed to `stdout`"),
-        )
-        .arg(
-            clap::Arg::with_name("quiet")
-                .short("q")
-                .long("quiet")
-                .takes_value(false)
-                .help("silent execution"),
-        )
-        .arg(
-            clap::Arg::with_name("gui")
-                .short("g")
-                .long("graphical")
-                .takes_value(false)
-                .help("Enables GUI to edit image; if omitted the default behaviour is to write `input_file` to `output_file`"),
-        ).get_matches();
-
-    if !matches.is_present("quiet") {
-        simple_logger::SimpleLogger::new().init().unwrap();
-    }
-
-    Config {
-        input_file: matches.value_of("input_file").map(|s| s.into()),
-        output_file: matches.value_of("output_file").map(|s| s.into()),
-        graphical: matches.is_present("gui"),
-    }
-}
-
 fn run_graphical(config: Config) {
     let opengl = OpenGL::V3_2;
 
@@ -300,6 +338,7 @@ fn run_graphical(config: Config) {
         .graphics_api(opengl)
         .transparent(true)
         .exit_on_esc(false)
+        .fullscreen(config.force_fullscreen)
         .build()
         .unwrap();
 
@@ -331,7 +370,7 @@ fn run_cli(config: Config) {
 }
 
 fn main() -> Result<()> {
-    let config = parse_commandline();
+    let config = Config::parse();
     debug!("config: {:#?}", config);
 
     if config.graphical {
